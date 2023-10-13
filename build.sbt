@@ -14,6 +14,7 @@ lazy val root = (project in file(".")).settings(
       .exclude("org.apache.flink", "flink-streaming-java_2.12")
       .exclude("org.apache.flink", "flink-metrics-dropwizard") % Provided,
     "org.flinkextended" %% "flink-scala-api" % s"${flinkVersion}_1.1.0",
+    "org.apache.flink" % "flink-runtime-web" % flinkVersion % Provided,
     "org.apache.flink" % "flink-table-api-java-bridge" % flinkVersion % Provided,
     "org.apache.flink" % "flink-connector-files" % flinkVersion % Provided,
     "org.apache.flink" % "flink-csv" % flinkVersion % Provided,

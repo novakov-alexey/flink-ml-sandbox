@@ -16,8 +16,11 @@ import org.apache.flink.table.api.DataTypes
 import org.apache.flink.table.functions.ScalarFunction
 import org.apache.flink.table.annotation.DataTypeHint
 import org.apache.flink.types.Row
+import org.apache.flink.connector.datagen.table.DataGenConnectorOptions
+import org.apache.flink.configuration.Configuration
 
 import scala.jdk.CollectionConverters.*
+import java.lang.{Long as JLong}
 
 import Common.*
 import Common.given
@@ -33,8 +36,8 @@ object Common:
     DenseVectorTypeInfo.INSTANCE
 
   given rowTypeInfo: TypeInformation[Row] = RowTypeInfo()
-
-  val env = StreamExecutionEnvironment.getExecutionEnvironment
+  
+  val env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(Configuration())
   val tEnv = StreamTableEnvironment.create(env.getJavaEnv)
 
 object KmeansCommon:
@@ -62,7 +65,7 @@ object KmeansCommon:
     .setPredictionCol(predictionCol)
   val model = kmeans.fit(inputStream)
   model.save(modelPath)
-  env.execute()
+  env.execute("KMeans Training Job")
 
 @main def KmeansInference =
   val model = KMeansModel.load(tEnv, modelPath)
@@ -100,7 +103,7 @@ class DoubleToVector extends ScalarFunction:
           .schema(schema)
           .option("fields.x.min", "1")
           .option("fields.x.max", "10")
-          .option("number-of-rows", s"$sampleCount")
+          .option("number-of-rows", s"$sampleCount")          
           .build()
       )
 
@@ -113,10 +116,31 @@ class DoubleToVector extends ScalarFunction:
   val lr = LinearRegression().setLearningRate(0.01d)
   val model = lr.fit(trainData)
 
-  val output = model.transform(trainData)(0)
+  val testSample =
+    tEnv
+      .from(
+        TableDescriptor
+          .forConnector("datagen")
+          .schema(schema)
+          .option("fields.x.min", "1")
+          .option("fields.x.max", "10")
+          // .option("number-of-rows", s"$sampleCount")          
+          .option(DataGenConnectorOptions.ROWS_PER_SECOND, new JLong(1))
+          .build()
+      )
 
-  val result = output.execute().collect().asScala.toList
-  result.headOption.foreach(r =>
-    println(r.getFieldNames(true).asScala.mkString(", "))
+  val testData = tEnv.sqlQuery(
+    s"select doubleToVector(x) as $featuresCol, y as $labelCol from $testSample"
   )
-  result.foreach(println)
+
+  val output = model.transform(testData)(0)
+
+  // streaming print
+  output.execute().collect().forEachRemaining(println)
+  
+  // batch print
+  // val result = output.execute().collect().asScala.toList
+  // result.headOption.foreach(r =>
+  //   println(r.getFieldNames(true).asScala.mkString(", "))
+  // )
+  // result.foreach(println)
