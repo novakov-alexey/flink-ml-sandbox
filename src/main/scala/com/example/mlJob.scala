@@ -18,6 +18,14 @@ import org.apache.flink.table.annotation.DataTypeHint
 import org.apache.flink.types.Row
 import org.apache.flink.connector.datagen.table.DataGenConnectorOptions
 import org.apache.flink.configuration.Configuration
+import org.apache.flink.configuration.JobManagerOptions
+import org.apache.flink.configuration.DeploymentOptions
+import org.apache.flink.configuration.RestOptions
+import org.apache.flink.configuration.StateBackendOptions
+import org.apache.flink.client.deployment.executors.RemoteExecutor
+import org.apache.flink.streaming.api.environment.{
+  StreamExecutionEnvironment => JavaEnv
+}
 
 import scala.jdk.CollectionConverters.*
 import java.lang.{Long as JLong}
@@ -36,9 +44,37 @@ object Common:
     DenseVectorTypeInfo.INSTANCE
 
   given rowTypeInfo: TypeInformation[Row] = RowTypeInfo()
+
+  val cfg = Configuration()
+  cfg.setString("taskmanager.memory.network.max", "1g")
+
+  val jmHost = "localhost"
+  val restPort = 8081
+  cfg.setString(JobManagerOptions.ADDRESS, jmHost)
+  cfg.setInteger(JobManagerOptions.PORT, restPort)
+  cfg.setString(DeploymentOptions.TARGET, RemoteExecutor.NAME)
+  cfg.setBoolean(DeploymentOptions.ATTACHED, true)
+  cfg.setString(RestOptions.ADDRESS, jmHost)
+  cfg.setInteger(RestOptions.PORT, restPort)
+  cfg.set(StateBackendOptions.STATE_BACKEND, "filesystem")
+
+  val localMavenPath =
+    s"${sys.props("user.home")}/Library/Caches/Coursier/v1/https/repo1.maven.org/maven2"
+  val jars = Array(
+    s"$localMavenPath/org/apache/flink/flink-ml-uber-1.17/2.3.0/flink-ml-uber-1.17-2.3.0.jar",
+    s"$localMavenPath/org/apache/flink/statefun-flink-core/3.2.0/statefun-flink-core-3.2.0.jar",
+    "target/scala-3.3.4/my-flink-scala-proj_3-0.1.0-SNAPSHOT.jar"
+  )
+
+  val env = StreamExecutionEnvironment.createRemoteEnvironment(
+    jmHost,
+    restPort,
+    cfg,
+    jars: _*
+  )
   
-  val env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(Configuration())
   val tEnv = StreamTableEnvironment.create(env.getJavaEnv)
+  tEnv.createTemporarySystemFunction("doubleToVector", DoubleToVector())
 
 object KmeansCommon:
   val modelPath = "target/trained-kmeans"
@@ -88,7 +124,7 @@ class DoubleToVector extends ScalarFunction:
   @DataTypeHint(value = "RAW", bridgedTo = classOf[DenseVector])
   def eval(d: java.lang.Double): DenseVector = Vectors.dense(d)
 
-@main def LinearReg(sampleCount: Int = 100) =
+@main def LinearReg(sampleCount: Int) =
   val schema = Schema
     .newBuilder()
     .column("x", DataTypes.DOUBLE())
@@ -103,11 +139,9 @@ class DoubleToVector extends ScalarFunction:
           .schema(schema)
           .option("fields.x.min", "1")
           .option("fields.x.max", "10")
-          .option("number-of-rows", s"$sampleCount")          
+          .option("number-of-rows", s"$sampleCount")
           .build()
       )
-
-  tEnv.createTemporarySystemFunction("doubleToVector", DoubleToVector())
 
   val trainData = tEnv.sqlQuery(
     s"select doubleToVector(x) as $featuresCol, y as $labelCol from $sample"
@@ -115,6 +149,7 @@ class DoubleToVector extends ScalarFunction:
 
   val lr = LinearRegression().setLearningRate(0.01d)
   val model = lr.fit(trainData)
+  println(s"Model has been trained")
 
   val testSample =
     tEnv
@@ -124,7 +159,7 @@ class DoubleToVector extends ScalarFunction:
           .schema(schema)
           .option("fields.x.min", "1")
           .option("fields.x.max", "10")
-          // .option("number-of-rows", s"$sampleCount")          
+          .option("number-of-rows", s"$sampleCount")
           .option(DataGenConnectorOptions.ROWS_PER_SECOND, new JLong(1))
           .build()
       )
@@ -136,8 +171,9 @@ class DoubleToVector extends ScalarFunction:
   val output = model.transform(testData)(0)
 
   // streaming print
+  println("features, label, prediction")
   output.execute().collect().forEachRemaining(println)
-  
+
   // batch print
   // val result = output.execute().collect().asScala.toList
   // result.headOption.foreach(r =>

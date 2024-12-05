@@ -1,50 +1,30 @@
 Global / onChangedBuildSource := ReloadOnSourceChanges
 
 ThisBuild / organization := "com.example"
-ThisBuild / scalaVersion := "3.3.0"
+ThisBuild / scalaVersion := "3.3.4"
 
-val flinkVersion = "1.17.1"
+val flinkVersion = "1.18.1"
 val flinkMlVersion = "2.3.0"
 
 lazy val root = (project in file(".")).settings(
   name := "my-flink-scala-proj",
+  run / javaOptions += "-Xmx4G",
+  fork := true,
   libraryDependencies ++= Seq(
     "org.apache.flink" % "flink-ml-uber-1.17" % flinkMlVersion % Provided,
     ("org.apache.flink" % "statefun-flink-core" % "3.2.0")
       .exclude("org.apache.flink", "flink-streaming-java_2.12")
       .exclude("org.apache.flink", "flink-metrics-dropwizard") % Provided,
-    "org.flinkextended" %% "flink-scala-api" % s"${flinkVersion}_1.1.0",
+    "org.flinkextended" %% "flink-scala-api" % s"${flinkVersion}_1.2.1",
     "org.apache.flink" % "flink-runtime-web" % flinkVersion % Provided,
     "org.apache.flink" % "flink-table-api-java-bridge" % flinkVersion % Provided,
     "org.apache.flink" % "flink-connector-files" % flinkVersion % Provided,
     "org.apache.flink" % "flink-csv" % flinkVersion % Provided,
     "org.apache.flink" % "flink-clients" % flinkVersion % Provided,
     "org.apache.flink" % "flink-table-runtime" % flinkVersion % Provided,
-    "org.apache.flink" % "flink-table-planner-loader" % flinkVersion % Provided
-  ),
-  assemblyMergeStrategy := {
-    case PathList(ps @ _*) if ps.last endsWith "module-info.class" =>
-      MergeStrategy.first
-    case x =>
-      val oldStrategy = (ThisBuild / assemblyMergeStrategy).value
-      oldStrategy(x)
-  },
-  assembly / assemblyExcludedJars := {
-    val cp = (assembly / fullClasspath).value
-    cp filter { f =>
-      Set(
-        "scala-asm-9.3.0-scala-1.jar",
-        "interface-1.0.12.jar",
-        "jline-terminal-3.19.0.jar",
-        "jline-reader-3.19.0.jar",
-        "jline-3.21.0.jar",
-        "scala-compiler-2.13.10.jar",
-        "flink-shaded-zookeeper-3-3.7.1-16.1.jar"
-      ).contains(
-        f.data.getName
-      )
-    }
-  }
+    "org.apache.flink" % "flink-table-planner-loader" % flinkVersion % Provided,
+    "ch.qos.logback" % "logback-classic" % "1.4.14" % Provided
+  )
 )
 
 // make run command include the provided dependencies
