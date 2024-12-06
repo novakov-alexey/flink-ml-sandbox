@@ -11,25 +11,20 @@ import org.apache.flink.ml.feature.sqltransformer.SQLTransformer
 import org.apache.flink.ml.feature.vectorassembler.VectorAssembler
 import org.apache.flink.ml.builder.Pipeline
 import org.apache.flink.ml.api.{Estimator, Stage}
+import org.apache.flink.ml.classification.linearsvc.LinearSVC
+import org.apache.flink.ml.classification.logisticregression.LogisticRegression
+import org.apache.flink.ml.evaluation.binaryclassification.BinaryClassificationEvaluator
+import org.apache.flink.ml.evaluation.binaryclassification.{
+  BinaryClassificationEvaluatorParams => ClassifierMetric
+}
 import org.apache.flink.table.api.*
-import org.apache.flink.table.functions.ScalarFunction
-import org.apache.flink.table.annotation.DataTypeHint
 import Common.*
 import Common.given
 
 import java.io.File
 import scala.jdk.CollectionConverters.*
 
-def predictedToBinary[T](v: Double): Short =
-  if v > 0.5 then 1 else 0
-
-class PredictedToBinary extends ScalarFunction:
-  @DataTypeHint(value = "RAW", bridgedTo = classOf[Short])
-  def eval(d: java.lang.Double): Short = if d > 0.5 then 1 else 0
-
 @main def customerChurn =
-  tEnv.createTemporarySystemFunction("predictedToBinary", PredictedToBinary())
-
   val churnLabelCol = "Exited"
   val schema = Schema
     .newBuilder()
@@ -61,22 +56,6 @@ class PredictedToBinary extends ScalarFunction:
       .build()
   )
 
-  val rawFeatureCols = List(
-    "CreditScore",
-    "GeographyStr",
-    "GenderStr",
-    "Age",
-    "Tenure",
-    "Balance",
-    "NumOfProducts",
-    "HasCrCard",
-    "IsActiveMember",
-    "EstimatedSalary"
-  )
-  val rawData = tEnv
-    .sqlQuery(s"""select ${(rawFeatureCols :+ churnLabelCol).mkString(",")} 
-      |from $trainData""".stripMargin)
-
   // 1 - index Geography and Gender
   val indexer = StringIndexer()
     .setStringOrderType(StringIndexerParams.ALPHABET_ASC_ORDER)
@@ -91,65 +70,109 @@ class PredictedToBinary extends ScalarFunction:
       .setDropLast(false)
 
   // 3 - Transform Double to Vector
-  val transformCols = rawFeatureCols.filterNot(_.endsWith("Str"))
+  val transformCols = List(
+    "CreditScore",
+    "Gender",
+    "Age",
+    "Tenure",
+    "Balance",
+    "NumOfProducts",
+    "HasCrCard",
+    "IsActiveMember",
+    "EstimatedSalary"
+  )
+
   val transformDoublesSql =
     transformCols.map(c => s"doubleToVector($c) as ${c}_v").mkString(",")
 
-  val sqlTransformer = SQLTransformer().setStatement(
-    s"SELECT Geography, Gender, $transformDoublesSql, $churnLabelCol FROM __THIS__"
-  )
+  val transformerStm =
+    s"""SELECT 
+    |Geography as Geography_v, 
+    |$transformDoublesSql,    
+    |$churnLabelCol FROM __THIS__""".stripMargin
+
+  val sqlTransformer = SQLTransformer().setStatement(transformerStm)
 
   // 4 - Normalize numbers
-  val standardScalers =
-    transformCols.map(c =>
+  val continuesCols = List(
+    "CreditScore",
+    "Age",
+    "Tenure",
+    "Balance",
+    "NumOfProducts",
+    "EstimatedSalary"
+  )
+
+  val standardScalers = continuesCols
+    .map(c =>
       StandardScaler()
-        .setWithMean(true)
+        .setWithMean(false)
         .setInputCol(c + "_v")
         .setOutputCol(c + "_s")
     )
 
   // 5 - merge columns to features col
-  val finalCols = List("Geography", "Gender") ++ transformCols.map(_ + "_s")
+  val categoricalCols =
+    List("Geography", "Gender", "HasCrCard", "IsActiveMember")
+  val finalCols = categoricalCols.map(_ + "_v") ++ continuesCols.map(_ + "_s")
+  // Geography is 3 countries + other 9 features
   val vectorSizes = 3 +: List.fill(finalCols.length - 1)(1)
   val vectorAssembler = VectorAssembler()
     .setInputCols(finalCols: _*)
     .setOutputCol(featuresCol)
     .setInputSizes(vectorSizes.map(Integer.valueOf): _*)
 
+  // 6 - Train
+  val lr = LogisticRegression()
+    .setLearningRate(0.002d)
+    .setLabelCol(churnLabelCol)
+    .setReg(0.1)
+    .setElasticNet(0.5)
+    .setMaxIter(100)
+    .setTol(0.01d)
+    .setGlobalBatchSize(64)
+
   val stages = (List(
     indexer,
     geographyEncoder,
     sqlTransformer
-  ) ++ standardScalers :+ vectorAssembler)
+  ) ++ standardScalers ++ List(vectorAssembler, lr))
     .map(_.asInstanceOf[Stage[?]])
     .asJava
 
   val pipeline = Pipeline(stages)
-  val pipelineModel = pipeline.fit(rawData)
-  val transformedData = pipelineModel.transform(rawData)(0)
 
-  val finalQuery =
-    s"select $featuresCol, $churnLabelCol from $transformedData"
-  val finalTrainData = tEnv.sqlQuery(finalQuery)
+  val rawFeatureCols = List(
+    "CreditScore",
+    "GeographyStr",
+    "GenderStr",
+    "Age",
+    "Tenure",
+    "Balance",
+    "NumOfProducts",
+    "HasCrCard",
+    "IsActiveMember",
+    "EstimatedSalary",
+    churnLabelCol
+  )
+  val rawDataQuery =
+    s"select ${rawFeatureCols.mkString(",")} from $trainData"
+  val rawData = tEnv.sqlQuery(rawDataQuery)
+  val testSetSize = 1000
+  val trainSet = rawData.limit(9000)
+  val testSet = rawData.limit(9000, testSetSize)
 
-  // Train
-  val lr = LinearRegression()
-    .setLearningRate(0.002d)
-    .setLabelCol(churnLabelCol)
-    .setMaxIter(100)
-    .setGlobalBatchSize(64)
-
-  val trainSet = finalTrainData.limit(8000)
-  val testSet = finalTrainData.limit(8000, 2000)
-  val lrModel = lr.fit(trainSet)
+  val pipelineModel = pipeline.fit(trainSet)
 
   // Test
-  val testResult = lrModel.transform(testSet)(0)
+  val testResult = pipelineModel.transform(testSet)(0)
 
   val resQuery =
     s"""|select 
-        |features, $churnLabelCol as label, prediction as rawPredicted, 
-        |predictedToBinary(prediction) as predicted 
+        |features, 
+        |$churnLabelCol as label, 
+        |prediction, 
+        |rawPrediction        
         |from $testResult""".stripMargin
   val res = tEnv.sqlQuery(resQuery).execute
   val iter = res.collect
@@ -157,5 +180,39 @@ class PredictedToBinary extends ScalarFunction:
   val header = iter.next
   val colNames = header.getFieldNames(true).asScala.toList.mkString(", ")
 
-  iter.forEachRemaining(println)
+  val correctCnt = iter.asScala.foldLeft(0) { (acc, row) =>
+    println(row)
+    val label = row.getFieldAs[Double]("label")
+    val prediction = row.getFieldAs[Double]("prediction")
+    if label == prediction then acc + 1 else acc
+  }
   println(colNames)
+  println(
+    s"correct labels count: $correctCnt, accuracy: ${correctCnt / testSetSize.toDouble}"
+  )
+
+  val evaluator = BinaryClassificationEvaluator()
+    .setLabelCol(churnLabelCol)
+    .setMetricsNames(
+      ClassifierMetric.AREA_UNDER_PR,
+      ClassifierMetric.KS,
+      ClassifierMetric.AREA_UNDER_ROC,
+      ClassifierMetric.AREA_UNDER_LORENZ
+    )
+
+  // Uses the BinaryClassificationEvaluator object for evaluations.
+  val outputTable = evaluator.transform(testResult)(0)
+  val evaluationResult = outputTable.execute.collect.next
+  println(
+    s"Area under the precision-recall curve: ${evaluationResult.getField(ClassifierMetric.AREA_UNDER_PR)}"
+  )
+  println(
+    s"Area under the receiver operating characteristic curve: ${evaluationResult
+        .getField(ClassifierMetric.AREA_UNDER_ROC)}"
+  )
+  println(
+    s"Kolmogorov-Smirnov value: ${evaluationResult.getField(ClassifierMetric.KS)}"
+  )
+  println(
+    s"Area under Lorenz curve: ${evaluationResult.getField(ClassifierMetric.AREA_UNDER_LORENZ)}"
+  )
