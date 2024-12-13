@@ -7,7 +7,7 @@ val flinkVersion = "1.18.1"
 val flinkMlVersion = "2.3.0"
 
 lazy val root = (project in file(".")).settings(
-  name := "my-flink-scala-proj",
+  name := "flink-ml-sandbox",
   run / javaOptions += "-Xmx4G",
   fork := true,
   libraryDependencies ++= Seq(
@@ -23,7 +23,7 @@ lazy val root = (project in file(".")).settings(
     "org.apache.flink" % "flink-clients" % flinkVersion % Provided,
     "org.apache.flink" % "flink-table-runtime" % flinkVersion % Provided,
     "org.apache.flink" % "flink-table-planner-loader" % flinkVersion % Provided,
-    "ch.qos.logback" % "logback-classic" % "1.4.14" % Provided
+    "ch.qos.logback" % "logback-classic" % "1.5.12" % Provided
   )
 )
 

@@ -1,31 +1,31 @@
 package com.example
 
-import org.apache.flink.ml.regression.linearregression.LinearRegression
+import com.example.Common.*
+import org.apache.flink.ml.api.Stage
+import org.apache.flink.ml.builder.Pipeline
+import org.apache.flink.ml.classification.logisticregression.LogisticRegression
+import org.apache.flink.ml.evaluation.binaryclassification.{
+  BinaryClassificationEvaluator,
+  BinaryClassificationEvaluatorParams as ClassifierMetric
+}
 import org.apache.flink.ml.feature.onehotencoder.OneHotEncoder
+import org.apache.flink.ml.feature.sqltransformer.SQLTransformer
+import org.apache.flink.ml.feature.standardscaler.StandardScaler
 import org.apache.flink.ml.feature.stringindexer.{
   StringIndexer,
   StringIndexerParams
 }
-import org.apache.flink.ml.feature.standardscaler.StandardScaler
-import org.apache.flink.ml.feature.sqltransformer.SQLTransformer
 import org.apache.flink.ml.feature.vectorassembler.VectorAssembler
-import org.apache.flink.ml.builder.Pipeline
-import org.apache.flink.ml.api.{Estimator, Stage}
-import org.apache.flink.ml.classification.linearsvc.LinearSVC
-import org.apache.flink.ml.classification.logisticregression.LogisticRegression
-import org.apache.flink.ml.evaluation.binaryclassification.BinaryClassificationEvaluator
-import org.apache.flink.ml.evaluation.binaryclassification.{
-  BinaryClassificationEvaluatorParams => ClassifierMetric
-}
 import org.apache.flink.table.api.*
-import Common.*
-import Common.given
 
-import java.io.File
 import scala.jdk.CollectionConverters.*
 
 @main def customerChurn =
-  val churnLabelCol = "Exited"
+  val hostname =
+    "sessioncluster-b98f04a6-a053-4570-8fdd-6fb426f640f9-jobmanager"
+
+  val (_, tEnv) = getEnv(Some(hostname))
+  val exitedLabel = "Exited"
   val schema = Schema
     .newBuilder()
     .column("RowNumber", DataTypes.INT())
@@ -41,16 +41,18 @@ import scala.jdk.CollectionConverters.*
     .column("HasCrCard", DataTypes.DOUBLE())
     .column("IsActiveMember", DataTypes.DOUBLE())
     .column("EstimatedSalary", DataTypes.DOUBLE())
-    .column(churnLabelCol, DataTypes.DOUBLE())
+    .column(exitedLabel, DataTypes.DOUBLE())
     .build()
-
-  val currentDirectory = File(".").getCanonicalPath
+  
   val trainData = tEnv.from(
     TableDescriptor
       .forConnector("filesystem")
       .schema(schema)
-      .option("path", s"file://${currentDirectory}/data/Churn_Modelling.csv")
-      //   .option("path", s"s3://vvp/artifacts/namespaces/default/Churn_Modelling.csv")
+      // .option("path", s"file://${File(".").getCanonicalPath}/data/Churn_Modelling.csv")
+      .option(
+        "path",
+        s"s3://vvp/artifacts/namespaces/default/Churn_Modelling.csv"
+      )
       .option("format", "csv")
       .option("csv.allow-comments", "true")
       .build()
@@ -89,7 +91,7 @@ import scala.jdk.CollectionConverters.*
     s"""SELECT 
     |Geography as Geography_v, 
     |$transformDoublesSql,    
-    |$churnLabelCol FROM __THIS__""".stripMargin
+    |$exitedLabel FROM __THIS__""".stripMargin
 
   val sqlTransformer = SQLTransformer().setStatement(transformerStm)
 
@@ -125,7 +127,7 @@ import scala.jdk.CollectionConverters.*
   // 6 - Train
   val lr = LogisticRegression()
     .setLearningRate(0.002d)
-    .setLabelCol(churnLabelCol)
+    .setLabelCol(exitedLabel)
     .setReg(0.1)
     .setElasticNet(0.5)
     .setMaxIter(100)
@@ -153,7 +155,7 @@ import scala.jdk.CollectionConverters.*
     "HasCrCard",
     "IsActiveMember",
     "EstimatedSalary",
-    churnLabelCol
+    exitedLabel
   )
   val rawDataQuery =
     s"select ${rawFeatureCols.mkString(",")} from $trainData"
@@ -170,7 +172,7 @@ import scala.jdk.CollectionConverters.*
   val resQuery =
     s"""|select 
         |features, 
-        |$churnLabelCol as label, 
+        |$exitedLabel as label, 
         |prediction, 
         |rawPrediction        
         |from $testResult""".stripMargin
@@ -192,7 +194,7 @@ import scala.jdk.CollectionConverters.*
   )
 
   val evaluator = BinaryClassificationEvaluator()
-    .setLabelCol(churnLabelCol)
+    .setLabelCol(exitedLabel)
     .setMetricsNames(
       ClassifierMetric.AREA_UNDER_PR,
       ClassifierMetric.KS,
