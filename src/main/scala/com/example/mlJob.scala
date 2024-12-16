@@ -8,6 +8,7 @@ import org.apache.flink.ml.linalg.{DenseVector, Vectors}
 import org.apache.flink.ml.regression.linearregression.LinearRegression
 import org.apache.flink.table.api.{DataTypes, Schema, TableDescriptor}
 import org.apache.flinkx.api.StreamExecutionEnvironment
+import org.apache.flinkx.api.conv.*
 
 import java.lang.Long as JLong
 import scala.jdk.CollectionConverters.*
@@ -27,7 +28,7 @@ object KmeansCommon:
   val (env, tEnv) = getEnv()
   val inputStream = tEnv
     .fromDataStream(
-      env.fromCollection(trainData).javaStream
+      env.fromCollection(trainData)
     )
     .as(featuresCol)
 
@@ -48,7 +49,6 @@ object KmeansCommon:
     .fromDataStream(
       env
         .fromCollection(trainData.map(v => DenseVector(v.values.map(_ + 1d))))
-        .javaStream
     )
     .as(featuresCol)
   val output = model.transform(inputStream)(0)
@@ -74,7 +74,7 @@ object KmeansCommon:
           .schema(schema)
           .option("fields.x.min", "1")
           .option("fields.x.max", "10")
-          .option("number-of-rows", s"$sampleCount")
+          .option("number-of-rows", sampleCount.toString)
           .build()
       )
 
@@ -94,7 +94,7 @@ object KmeansCommon:
           .schema(schema)
           .option("fields.x.min", "1")
           .option("fields.x.max", "10")
-          .option("number-of-rows", s"$sampleCount")
+          .option("number-of-rows", sampleCount.toString)
           .option(DataGenConnectorOptions.ROWS_PER_SECOND, JLong.valueOf(1))
           .build()
       )

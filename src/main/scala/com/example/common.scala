@@ -17,6 +17,7 @@ import org.apache.flink.configuration.StateBackendOptions
 import org.apache.flink.client.deployment.executors.RemoteExecutor
 
 import org.apache.flinkx.api.StreamExecutionEnvironment
+import org.apache.flinkx.api.conv.*
 
 object Common:
   val labelCol = "label"
@@ -51,7 +52,9 @@ object Common:
         val jars = Array(
           s"$localMavenPath/org/apache/flink/flink-ml-uber-1.17/2.3.0/flink-ml-uber-1.17-2.3.0.jar",
           s"$localMavenPath/org/apache/flink/statefun-flink-core/3.2.0/statefun-flink-core-3.2.0.jar",
-          "target/scala-3.3.4/my-flink-scala-proj_3-0.1.0-SNAPSHOT.jar"
+          s"$localMavenPath/org/scala-lang/scala-library/2.13.15/scala-library-2.13.15.jar",
+          s"$localMavenPath/org/flinkextended/flink-scala-api_3/1.18.1_1.2.1/flink-scala-api_3-1.18.1_1.2.1.jar",
+          BuildInfo.jarPath.toString
         )
         val e = StreamExecutionEnvironment.createRemoteEnvironment(
           host,
@@ -59,13 +62,13 @@ object Common:
           cfg,
           jars: _*
         )
-        e.setParallelism(8)
+        // e.setParallelism(8)
         e
 
       case None =>
         StreamExecutionEnvironment.createLocalEnvironment(4, cfg)
 
-    val tEnv = StreamTableEnvironment.create(env.getJavaEnv)
+    val tEnv = StreamTableEnvironment.create(env)
     tEnv.createTemporarySystemFunction("doubleToVector", DoubleToVector())
     (env, tEnv)
 

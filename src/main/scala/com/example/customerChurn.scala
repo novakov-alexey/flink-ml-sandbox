@@ -1,6 +1,10 @@
 package com.example
 
-import com.example.Common.*
+import Common.*
+import org.apache.flink.api.common.eventtime.WatermarkStrategy
+import org.apache.flink.api.common.typeinfo.TypeInformation
+import org.apache.flink.connector.file.src.FileSource
+import org.apache.flink.core.fs.Path
 import org.apache.flink.ml.api.Stage
 import org.apache.flink.ml.builder.Pipeline
 import org.apache.flink.ml.classification.logisticregression.LogisticRegression
@@ -11,52 +15,72 @@ import org.apache.flink.ml.evaluation.binaryclassification.{
 import org.apache.flink.ml.feature.onehotencoder.OneHotEncoder
 import org.apache.flink.ml.feature.sqltransformer.SQLTransformer
 import org.apache.flink.ml.feature.standardscaler.StandardScaler
-import org.apache.flink.ml.feature.stringindexer.{
-  StringIndexer,
-  StringIndexerParams
-}
+import org.apache.flink.ml.feature.stringindexer.{StringIndexer, StringIndexerParams}
 import org.apache.flink.ml.feature.vectorassembler.VectorAssembler
+import org.apache.flink.connector.file.src.reader.TextLineInputFormat
 import org.apache.flink.table.api.*
+import org.apache.flink.types.Row
+import org.apache.flink.api.java.typeutils.RowTypeInfo
 
+import org.apache.flinkx.api.conv.*
+import org.apache.flinkx.api.serializers.*
+
+import java.io.File
 import scala.jdk.CollectionConverters.*
 
 @main def customerChurn =
-  val hostname =
-    "sessioncluster-b98f04a6-a053-4570-8fdd-6fb426f640f9-jobmanager"
+  val hostname = Some("sessioncluster-b98f04a6-a053-4570-8fdd-6fb426f640f9-jobmanager")
 
-  val (_, tEnv) = getEnv(Some(hostname))
+  val (env, tEnv) = getEnv(hostname)
   val exitedLabel = "Exited"
-  val schema = Schema
-    .newBuilder()
-    .column("RowNumber", DataTypes.INT())
-    .column("CustomerId", DataTypes.INT())
-    .column("Surname", DataTypes.STRING())
-    .column("CreditScore", DataTypes.DOUBLE())
-    .column("GeographyStr", DataTypes.STRING())
-    .column("GenderStr", DataTypes.STRING())
-    .column("Age", DataTypes.DOUBLE())
-    .column("Tenure", DataTypes.DOUBLE())
-    .column("Balance", DataTypes.DOUBLE())
-    .column("NumOfProducts", DataTypes.DOUBLE())
-    .column("HasCrCard", DataTypes.DOUBLE())
-    .column("IsActiveMember", DataTypes.DOUBLE())
-    .column("EstimatedSalary", DataTypes.DOUBLE())
-    .column(exitedLabel, DataTypes.DOUBLE())
+
+  val filePath =
+    if hostname.isDefined then Path("s3://vvp/artifacts/namespaces/default/Churn_Modelling.csv")
+    else Path.fromLocalFile(File(s"${File(".").getCanonicalPath}/data/Churn_Modelling.csv"))
+
+  val source = FileSource
+    .forRecordStreamFormat(
+      TextLineInputFormat(),
+      filePath
+    )
     .build()
-  
-  val trainData = tEnv.from(
-    TableDescriptor
-      .forConnector("filesystem")
-      .schema(schema)
-      // .option("path", s"file://${File(".").getCanonicalPath}/data/Churn_Modelling.csv")
-      .option(
-        "path",
-        s"s3://vvp/artifacts/namespaces/default/Churn_Modelling.csv"
-      )
-      .option("format", "csv")
-      .option("csv.allow-comments", "true")
-      .build()
+  given rowTypes: RowTypeInfo = RowTypeInfo(
+    (doubleInfo +: (Array[TypeInformation[?]](stringInfo, stringInfo) ++ Array.fill(8)(doubleInfo))),
+    Array(
+      "CreditScore",
+      "GeographyStr",
+      "GenderStr",
+      "Age",
+      "Tenure",
+      "Balance",
+      "NumOfProducts",
+      "HasCrCard",
+      "IsActiveMember",
+      "EstimatedSalary",
+      exitedLabel
+    )
   )
+  val csvStream = env
+    .fromSource(source, WatermarkStrategy.noWatermarks(), "trainingData")
+    .filter(l => !l.startsWith("#"))
+    .map(l =>
+      val row = l.split(",").slice(3, 14) // from CreditScore to Exited
+      Row.of(
+        row(0).toDouble,
+        row(1),
+        row(2),
+        row(3).toDouble,
+        row(4).toDouble,
+        row(5).toDouble,
+        row(6).toDouble,
+        row(7).toDouble,
+        row(8).toDouble,
+        row(9).toDouble,
+        row(10).toDouble
+      )
+    )
+
+  val trainData = tEnv.fromDataStream(csvStream)
 
   // 1 - index Geography and Gender
   val indexer = StringIndexer()
@@ -172,7 +196,7 @@ import scala.jdk.CollectionConverters.*
   val resQuery =
     s"""|select 
         |features, 
-        |$exitedLabel as label, 
+        |$exitedLabel as $labelCol, 
         |prediction, 
         |rawPrediction        
         |from $testResult""".stripMargin
@@ -184,7 +208,7 @@ import scala.jdk.CollectionConverters.*
 
   val correctCnt = iter.asScala.foldLeft(0) { (acc, row) =>
     println(row)
-    val label = row.getFieldAs[Double]("label")
+    val label = row.getFieldAs[Double](labelCol)
     val prediction = row.getFieldAs[Double]("prediction")
     if label == prediction then acc + 1 else acc
   }
