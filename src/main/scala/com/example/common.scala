@@ -47,13 +47,13 @@ object Common:
         cfg.setInteger(RestOptions.PORT, restPort)
         cfg.set(StateBackendOptions.STATE_BACKEND, "filesystem")
 
-        val localMavenPath =
+        val localCoursierPath =
           s"${sys.props("user.home")}/Library/Caches/Coursier/v1/https/repo1.maven.org/maven2"
         val jars = Array(
-          s"$localMavenPath/org/apache/flink/flink-ml-uber-1.17/2.3.0/flink-ml-uber-1.17-2.3.0.jar",
-          s"$localMavenPath/org/apache/flink/statefun-flink-core/3.2.0/statefun-flink-core-3.2.0.jar",
-          s"$localMavenPath/org/scala-lang/scala-library/2.13.15/scala-library-2.13.15.jar",
-          s"$localMavenPath/org/flinkextended/flink-scala-api_3/1.18.1_1.2.1/flink-scala-api_3-1.18.1_1.2.1.jar",
+          s"$localCoursierPath/org/apache/flink/flink-ml-uber-1.17/2.3.0/flink-ml-uber-1.17-2.3.0.jar",
+          s"$localCoursierPath/org/apache/flink/statefun-flink-core/3.2.0/statefun-flink-core-3.2.0.jar",
+          s"$localCoursierPath/org/scala-lang/scala-library/2.13.15/scala-library-2.13.15.jar",
+          s"$localCoursierPath/org/flinkextended/flink-scala-api_3/1.18.1_1.2.1/flink-scala-api_3-1.18.1_1.2.1.jar",
           BuildInfo.jarPath.toString
         )
         val e = StreamExecutionEnvironment.createRemoteEnvironment(

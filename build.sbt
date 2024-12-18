@@ -11,6 +11,7 @@ lazy val root = (project in file("."))
     name := "flink-ml-sandbox",
     run / javaOptions += "-Xmx4G",
     fork := true,
+    resolvers += Resolver.mavenLocal,
     libraryDependencies ++= Seq(
       "org.apache.flink" % "flink-ml-uber-1.17" % flinkMlVersion % Provided,
       ("org.apache.flink" % "statefun-flink-core" % "3.2.0")

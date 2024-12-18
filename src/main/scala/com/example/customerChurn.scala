@@ -3,7 +3,9 @@ package com.example
 import Common.*
 import org.apache.flink.api.common.eventtime.WatermarkStrategy
 import org.apache.flink.api.common.typeinfo.TypeInformation
+import org.apache.flink.api.java.typeutils.RowTypeInfo
 import org.apache.flink.connector.file.src.FileSource
+import org.apache.flink.connector.file.src.reader.TextLineInputFormat
 import org.apache.flink.core.fs.Path
 import org.apache.flink.ml.api.Stage
 import org.apache.flink.ml.builder.Pipeline
@@ -17,10 +19,8 @@ import org.apache.flink.ml.feature.sqltransformer.SQLTransformer
 import org.apache.flink.ml.feature.standardscaler.StandardScaler
 import org.apache.flink.ml.feature.stringindexer.{StringIndexer, StringIndexerParams}
 import org.apache.flink.ml.feature.vectorassembler.VectorAssembler
-import org.apache.flink.connector.file.src.reader.TextLineInputFormat
 import org.apache.flink.table.api.*
 import org.apache.flink.types.Row
-import org.apache.flink.api.java.typeutils.RowTypeInfo
 
 import org.apache.flinkx.api.conv.*
 import org.apache.flinkx.api.serializers.*
@@ -45,7 +45,7 @@ import scala.jdk.CollectionConverters.*
     )
     .build()
   given rowTypes: RowTypeInfo = RowTypeInfo(
-    (doubleInfo +: (Array[TypeInformation[?]](stringInfo, stringInfo) ++ Array.fill(8)(doubleInfo))),
+    doubleInfo +: (Array[TypeInformation[?]](stringInfo, stringInfo) ++ Array.fill(8)(doubleInfo)),
     Array(
       "CreditScore",
       "GeographyStr",
@@ -86,19 +86,18 @@ import scala.jdk.CollectionConverters.*
   val indexer = StringIndexer()
     .setStringOrderType(StringIndexerParams.ALPHABET_ASC_ORDER)
     .setInputCols("GeographyStr", "GenderStr")
-    .setOutputCols("GeographyInd", "Gender")
+    .setOutputCols("GeographyInd", "GenderInd")
 
-  // 2 - OneHot Encode Geography
+  // 2 - OneHot Encode Geography and Gender
   val geographyEncoder =
     OneHotEncoder()
-      .setInputCols("GeographyInd")
-      .setOutputCols("Geography")
+      .setInputCols("GeographyInd", "GenderInd")
+      .setOutputCols("Geography", "Gender")
       .setDropLast(false)
 
   // 3 - Transform Double to Vector
   val transformCols = List(
     "CreditScore",
-    "Gender",
     "Age",
     "Tenure",
     "Balance",
@@ -114,6 +113,7 @@ import scala.jdk.CollectionConverters.*
   val transformerStm =
     s"""SELECT 
     |Geography as Geography_v, 
+    |Gender as Gender_v, 
     |$transformDoublesSql,    
     |$exitedLabel FROM __THIS__""".stripMargin
 
@@ -132,7 +132,7 @@ import scala.jdk.CollectionConverters.*
   val standardScalers = continuesCols
     .map(c =>
       StandardScaler()
-        .setWithMean(false)
+        .setWithMean(true)
         .setInputCol(c + "_v")
         .setOutputCol(c + "_s")
     )
@@ -141,8 +141,9 @@ import scala.jdk.CollectionConverters.*
   val categoricalCols =
     List("Geography", "Gender", "HasCrCard", "IsActiveMember")
   val finalCols = categoricalCols.map(_ + "_v") ++ continuesCols.map(_ + "_s")
-  // Geography is 3 countries + other 9 features
-  val vectorSizes = 3 +: List.fill(finalCols.length - 1)(1)
+  // Geography is 3 countries, Gender is 2 + other 8 features
+  val encodedFeatures = List(3, 2)
+  val vectorSizes = encodedFeatures ++ List.fill(finalCols.length - encodedFeatures.length)(1)
   val vectorAssembler = VectorAssembler()
     .setInputCols(finalCols: _*)
     .setOutputCol(featuresCol)
@@ -184,9 +185,11 @@ import scala.jdk.CollectionConverters.*
   val rawDataQuery =
     s"select ${rawFeatureCols.mkString(",")} from $trainData"
   val rawData = tEnv.sqlQuery(rawDataQuery)
-  val testSetSize = 1000
-  val trainSet = rawData.limit(9000)
-  val testSet = rawData.limit(9000, testSetSize)
+  val testSetSize = 2000
+  val totalSetSize = 10000
+  val trainSetSize = totalSetSize - testSetSize
+  val trainSet = rawData.limit(trainSetSize)
+  val testSet = rawData.limit(trainSetSize, testSetSize)
 
   val pipelineModel = pipeline.fit(trainSet)
 
@@ -195,21 +198,21 @@ import scala.jdk.CollectionConverters.*
 
   val resQuery =
     s"""|select 
-        |features, 
+        |$featuresCol, 
         |$exitedLabel as $labelCol, 
-        |prediction, 
+        |$predictionCol, 
         |rawPrediction        
         |from $testResult""".stripMargin
   val res = tEnv.sqlQuery(resQuery).execute
   val iter = res.collect
 
-  val header = iter.next
-  val colNames = header.getFieldNames(true).asScala.toList.mkString(", ")
+  val firstRow = iter.next
+  val colNames = firstRow.getFieldNames(true).asScala.toList.mkString(", ")
 
-  val correctCnt = iter.asScala.foldLeft(0) { (acc, row) =>
+  val correctCnt = (List(firstRow).toIterable ++ iter.asScala).foldLeft(0) { (acc, row) =>
     println(row)
     val label = row.getFieldAs[Double](labelCol)
-    val prediction = row.getFieldAs[Double]("prediction")
+    val prediction = row.getFieldAs[Double](predictionCol)
     if label == prediction then acc + 1 else acc
   }
   println(colNames)
