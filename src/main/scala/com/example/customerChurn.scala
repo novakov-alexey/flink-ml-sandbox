@@ -29,13 +29,15 @@ import java.io.File
 import scala.jdk.CollectionConverters.*
 
 @main def customerChurn =
-  val hostname = Some("sessioncluster-b98f04a6-a053-4570-8fdd-6fb426f640f9-jobmanager")
+  // val hostname = args.headOption
+  val hostname = Some("localhost") // Some("sessioncluster-b98f04a6-a053-4570-8fdd-6fb426f640f9-jobmanager")
 
   val (env, tEnv) = getEnv(hostname)
   val exitedLabel = "Exited"
 
   val filePath =
-    if hostname.isDefined then Path("s3://vvp/artifacts/namespaces/default/Churn_Modelling.csv")
+    if hostname.isDefined && !hostname.exists(_ == "localhost") then
+      Path("s3://vvp/artifacts/namespaces/default/Churn_Modelling.csv")
     else Path.fromLocalFile(File(s"${File(".").getCanonicalPath}/data/Churn_Modelling.csv"))
 
   val source = FileSource
@@ -44,21 +46,22 @@ import scala.jdk.CollectionConverters.*
       filePath
     )
     .build()
+  val rawFeatureCols = Array(
+    "CreditScore",
+    "GeographyStr",
+    "GenderStr",
+    "Age",
+    "Tenure",
+    "Balance",
+    "NumOfProducts",
+    "HasCrCard",
+    "IsActiveMember",
+    "EstimatedSalary",
+    exitedLabel
+  )
   given rowTypes: RowTypeInfo = RowTypeInfo(
     doubleInfo +: (Array[TypeInformation[?]](stringInfo, stringInfo) ++ Array.fill(8)(doubleInfo)),
-    Array(
-      "CreditScore",
-      "GeographyStr",
-      "GenderStr",
-      "Age",
-      "Tenure",
-      "Balance",
-      "NumOfProducts",
-      "HasCrCard",
-      "IsActiveMember",
-      "EstimatedSalary",
-      exitedLabel
-    )
+    rawFeatureCols
   )
   val csvStream = env
     .fromSource(source, WatermarkStrategy.noWatermarks(), "trainingData")
@@ -96,30 +99,6 @@ import scala.jdk.CollectionConverters.*
       .setDropLast(false)
 
   // 3 - Transform Double to Vector
-  val transformCols = List(
-    "CreditScore",
-    "Age",
-    "Tenure",
-    "Balance",
-    "NumOfProducts",
-    "HasCrCard",
-    "IsActiveMember",
-    "EstimatedSalary"
-  )
-
-  val transformDoublesSql =
-    transformCols.map(c => s"doubleToVector($c) as ${c}_v").mkString(",")
-
-  val transformerStm =
-    s"""SELECT 
-    |Geography as Geography_v, 
-    |Gender as Gender_v, 
-    |$transformDoublesSql,    
-    |$exitedLabel FROM __THIS__""".stripMargin
-
-  val sqlTransformer = SQLTransformer().setStatement(transformerStm)
-
-  // 4 - Normalize numbers
   val continuesCols = List(
     "CreditScore",
     "Age",
@@ -129,6 +108,20 @@ import scala.jdk.CollectionConverters.*
     "EstimatedSalary"
   )
 
+  val transformDoublesSql =
+    continuesCols.map(c => s"doubleToVector($c) as ${c}_v").mkString(",")
+  val categoricalCols =
+    List("Geography", "Gender", "HasCrCard", "IsActiveMember")
+
+  val transformerStm =
+    s"""SELECT
+    |${categoricalCols.mkString(",")},    
+    |$transformDoublesSql,    
+    |$exitedLabel FROM __THIS__""".stripMargin
+
+  val sqlTransformer = SQLTransformer().setStatement(transformerStm)
+
+  // 4 - Normalize numbers
   val standardScalers = continuesCols
     .map(c =>
       StandardScaler()
@@ -138,14 +131,12 @@ import scala.jdk.CollectionConverters.*
     )
 
   // 5 - merge columns to features col
-  val categoricalCols =
-    List("Geography", "Gender", "HasCrCard", "IsActiveMember")
-  val finalCols = categoricalCols.map(_ + "_v") ++ continuesCols.map(_ + "_s")
+  val finalCols = categoricalCols ++ continuesCols.map(_ + "_s")
   // Geography is 3 countries, Gender is 2 + other 8 features
   val encodedFeatures = List(3, 2)
   val vectorSizes = encodedFeatures ++ List.fill(finalCols.length - encodedFeatures.length)(1)
   val vectorAssembler = VectorAssembler()
-    .setInputCols(finalCols: _*)
+    .setInputCols(finalCols*)
     .setOutputCol(featuresCol)
     .setInputSizes(vectorSizes.map(Integer.valueOf): _*)
 
@@ -169,27 +160,11 @@ import scala.jdk.CollectionConverters.*
 
   val pipeline = Pipeline(stages)
 
-  val rawFeatureCols = List(
-    "CreditScore",
-    "GeographyStr",
-    "GenderStr",
-    "Age",
-    "Tenure",
-    "Balance",
-    "NumOfProducts",
-    "HasCrCard",
-    "IsActiveMember",
-    "EstimatedSalary",
-    exitedLabel
-  )
-  val rawDataQuery =
-    s"select ${rawFeatureCols.mkString(",")} from $trainData"
-  val rawData = tEnv.sqlQuery(rawDataQuery)
   val testSetSize = 2000
   val totalSetSize = 10000
   val trainSetSize = totalSetSize - testSetSize
-  val trainSet = rawData.limit(trainSetSize)
-  val testSet = rawData.limit(trainSetSize, testSetSize)
+  val trainSet = trainData.limit(trainSetSize)
+  val testSet = trainData.limit(trainSetSize, testSetSize)
 
   val pipelineModel = pipeline.fit(trainSet)
 
