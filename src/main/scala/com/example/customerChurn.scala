@@ -15,7 +15,6 @@ import org.apache.flink.ml.evaluation.binaryclassification.{
   BinaryClassificationEvaluatorParams as ClassifierMetric
 }
 import org.apache.flink.ml.feature.onehotencoder.OneHotEncoder
-import org.apache.flink.ml.feature.sqltransformer.SQLTransformer
 import org.apache.flink.ml.feature.standardscaler.StandardScaler
 import org.apache.flink.ml.feature.stringindexer.{StringIndexer, StringIndexerParams}
 import org.apache.flink.ml.feature.vectorassembler.VectorAssembler
@@ -99,7 +98,7 @@ import scala.jdk.CollectionConverters.*
       .setOutputCols("Geography", "Gender")
       .setDropLast(false)
 
-  // 3 - Transform Double to Vector
+  // 3 - Merge to Vector
   val continuesCols = List(
     "CreditScore",
     "Age",
@@ -109,18 +108,13 @@ import scala.jdk.CollectionConverters.*
     "EstimatedSalary"
   )
 
-  val transformDoublesSql =
-    s"numericsToVector(${continuesCols.mkString(",")}) as continues_features"
   val categoricalCols =
     List("Geography", "Gender", "HasCrCard", "IsActiveMember")
 
-  val transformerStm =
-    s"""SELECT
-    |${categoricalCols.mkString(",")},    
-    |$transformDoublesSql,    
-    |$exitedLabel FROM __THIS__""".stripMargin
-
-  val sqlTransformer = SQLTransformer().setStatement(transformerStm)
+  val assembler = VectorAssembler()
+    .setInputCols(continuesCols*)
+    .setOutputCol("continues_features")
+    .setInputSizes(List.fill(continuesCols.length)(1).map(Integer.valueOf): _*)
 
   // 4 - Normalize numbers
   val standardScaler =
@@ -129,12 +123,12 @@ import scala.jdk.CollectionConverters.*
       .setInputCol("continues_features")
       .setOutputCol("continues_features_s")
 
-  // 5 - merge columns to features col
+  // 5 - merge columns to features column
   val finalCols = categoricalCols :+ "continues_features_s"
   // Geography is 3 countries, Gender is 2 + other features
   val encodedFeatures = List(3, 2)
   val vectorSizes = encodedFeatures ++ List.fill(categoricalCols.length - encodedFeatures.length)(1) :+ 6
-  val vectorAssembler = VectorAssembler()
+  val finalAssembler = VectorAssembler()
     .setInputCols(finalCols*)
     .setOutputCol(featuresCol)
     .setInputSizes(vectorSizes.map(Integer.valueOf): _*)
@@ -152,9 +146,9 @@ import scala.jdk.CollectionConverters.*
   val stages = (List(
     indexer,
     geographyEncoder,
-    sqlTransformer,
+    assembler,
     standardScaler,
-    vectorAssembler,
+    finalAssembler,
     lr
   ))
     .map(_.asInstanceOf[Stage[?]])

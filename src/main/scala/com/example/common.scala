@@ -71,7 +71,6 @@ object Common:
 
     val tEnv = StreamTableEnvironment.create(env)
     tEnv.createTemporarySystemFunction("doubleToVector", DoubleToVector())
-    tEnv.createTemporarySystemFunction("numericsToVector", NumericsToVector())
     (env, tEnv)
 
 class DoubleToVector extends ScalarFunction:
