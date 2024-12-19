@@ -18,6 +18,7 @@ import org.apache.flink.client.deployment.executors.RemoteExecutor
 
 import org.apache.flinkx.api.StreamExecutionEnvironment
 import org.apache.flinkx.api.conv.*
+import org.apache.flink.table.api.*
 
 object Common:
   val labelCol = "label"
@@ -62,7 +63,7 @@ object Common:
           cfg,
           jars: _*
         )
-        // e.setParallelism(8)
+        e.setParallelism(2)
         e
 
       case None =>
@@ -70,6 +71,7 @@ object Common:
 
     val tEnv = StreamTableEnvironment.create(env)
     tEnv.createTemporarySystemFunction("doubleToVector", DoubleToVector())
+    tEnv.createTemporarySystemFunction("numericsToVector", NumericsToVector())
     (env, tEnv)
 
 class DoubleToVector extends ScalarFunction:

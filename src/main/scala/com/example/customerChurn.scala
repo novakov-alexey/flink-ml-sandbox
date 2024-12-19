@@ -36,7 +36,7 @@ import scala.jdk.CollectionConverters.*
   val exitedLabel = "Exited"
 
   val filePath =
-    if hostname.isDefined && !hostname.exists(_ == "localhost") then
+    if hostname.isDefined && !hostname.contains("localhost") then
       Path("s3://vvp/artifacts/namespaces/default/Churn_Modelling.csv")
     else Path.fromLocalFile(File(s"${File(".").getCanonicalPath}/data/Churn_Modelling.csv"))
 
@@ -82,6 +82,7 @@ import scala.jdk.CollectionConverters.*
         row(10).toDouble
       )
     )
+    .setParallelism(3)
 
   val trainData = tEnv.fromDataStream(csvStream)
 
@@ -109,7 +110,7 @@ import scala.jdk.CollectionConverters.*
   )
 
   val transformDoublesSql =
-    continuesCols.map(c => s"doubleToVector($c) as ${c}_v").mkString(",")
+    s"numericsToVector(${continuesCols.mkString(",")}) as continues_features"
   val categoricalCols =
     List("Geography", "Gender", "HasCrCard", "IsActiveMember")
 
@@ -122,19 +123,17 @@ import scala.jdk.CollectionConverters.*
   val sqlTransformer = SQLTransformer().setStatement(transformerStm)
 
   // 4 - Normalize numbers
-  val standardScalers = continuesCols
-    .map(c =>
-      StandardScaler()
-        .setWithMean(true)
-        .setInputCol(c + "_v")
-        .setOutputCol(c + "_s")
-    )
+  val standardScaler =
+    StandardScaler()
+      .setWithMean(true)
+      .setInputCol("continues_features")
+      .setOutputCol("continues_features_s")
 
   // 5 - merge columns to features col
-  val finalCols = categoricalCols ++ continuesCols.map(_ + "_s")
-  // Geography is 3 countries, Gender is 2 + other 8 features
+  val finalCols = categoricalCols :+ "continues_features_s"
+  // Geography is 3 countries, Gender is 2 + other features
   val encodedFeatures = List(3, 2)
-  val vectorSizes = encodedFeatures ++ List.fill(finalCols.length - encodedFeatures.length)(1)
+  val vectorSizes = encodedFeatures ++ List.fill(categoricalCols.length - encodedFeatures.length)(1) :+ 6
   val vectorAssembler = VectorAssembler()
     .setInputCols(finalCols*)
     .setOutputCol(featuresCol)
@@ -153,8 +152,11 @@ import scala.jdk.CollectionConverters.*
   val stages = (List(
     indexer,
     geographyEncoder,
-    sqlTransformer
-  ) ++ standardScalers ++ List(vectorAssembler, lr))
+    sqlTransformer,
+    standardScaler,
+    vectorAssembler,
+    lr
+  ))
     .map(_.asInstanceOf[Stage[?]])
     .asJava
 
