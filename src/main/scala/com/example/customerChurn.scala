@@ -62,11 +62,13 @@ import scala.jdk.CollectionConverters.*
     doubleInfo +: (Array[TypeInformation[?]](stringInfo, stringInfo) ++ Array.fill(8)(doubleInfo)),
     rawFeatureCols
   )
+  val skipColCount = 3
   val csvStream = env
     .fromSource(source, WatermarkStrategy.noWatermarks(), "trainingData")
     .filter(l => !l.startsWith("#"))
     .map(l =>
-      val row = l.split(",").slice(3, 14) // from CreditScore to Exited
+      // from `CreditScore` to `Exited` cols
+      val row = l.split(",").slice(skipColCount, skipColCount + rawFeatureCols.length)
       Row.of(
         row(0).toDouble,
         row(1),
@@ -81,7 +83,7 @@ import scala.jdk.CollectionConverters.*
         row(10).toDouble
       )
     )
-    .setParallelism(3)
+    .setParallelism(3) // it is tunned based on the current CSV data volume
 
   val trainData = tEnv.fromDataStream(csvStream)
 
@@ -108,13 +110,10 @@ import scala.jdk.CollectionConverters.*
     "EstimatedSalary"
   )
 
-  val categoricalCols =
-    List("Geography", "Gender", "HasCrCard", "IsActiveMember")
-
   val assembler = VectorAssembler()
     .setInputCols(continuesCols*)
     .setOutputCol("continues_features")
-    .setInputSizes(List.fill(continuesCols.length)(1).map(Integer.valueOf): _*)
+    .setInputSizes(List.fill(continuesCols.length)(1).map(Integer.valueOf)*)
 
   // 4 - Normalize numbers
   val standardScaler =
@@ -124,14 +123,17 @@ import scala.jdk.CollectionConverters.*
       .setOutputCol("continues_features_s")
 
   // 5 - merge columns to features column
+  val categoricalCols =
+    List("Geography", "Gender", "HasCrCard", "IsActiveMember")
   val finalCols = categoricalCols :+ "continues_features_s"
   // Geography is 3 countries, Gender is 2 + other features
   val encodedFeatures = List(3, 2)
-  val vectorSizes = encodedFeatures ++ List.fill(categoricalCols.length - encodedFeatures.length)(1) :+ 6
+  val vectorSizes =
+    encodedFeatures ++ List.fill(categoricalCols.length - encodedFeatures.length)(1) :+ continuesCols.length
   val finalAssembler = VectorAssembler()
     .setInputCols(finalCols*)
     .setOutputCol(featuresCol)
-    .setInputSizes(vectorSizes.map(Integer.valueOf): _*)
+    .setInputSizes(vectorSizes.map(Integer.valueOf)*)
 
   // 6 - Train
   val lr = LogisticRegression()
@@ -143,16 +145,14 @@ import scala.jdk.CollectionConverters.*
     .setTol(0.01d)
     .setGlobalBatchSize(64)
 
-  val stages = (List(
+  val stages = (List[Stage[?]](
     indexer,
     geographyEncoder,
     assembler,
     standardScaler,
     finalAssembler,
     lr
-  ))
-    .map(_.asInstanceOf[Stage[?]])
-    .asJava
+  )).asJava
 
   val pipeline = Pipeline(stages)
 
