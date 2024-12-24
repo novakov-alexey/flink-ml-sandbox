@@ -8,7 +8,7 @@ import org.apache.flink.connector.file.src.FileSource
 import org.apache.flink.connector.file.src.reader.TextLineInputFormat
 import org.apache.flink.core.fs.Path
 import org.apache.flink.ml.api.Stage
-import org.apache.flink.ml.builder.Pipeline
+import org.apache.flink.ml.builder.{Pipeline, PipelineModel}
 import org.apache.flink.ml.classification.logisticregression.LogisticRegression
 import org.apache.flink.ml.evaluation.binaryclassification.{
   BinaryClassificationEvaluator,
@@ -20,7 +20,6 @@ import org.apache.flink.ml.feature.stringindexer.{StringIndexer, StringIndexerPa
 import org.apache.flink.ml.feature.vectorassembler.VectorAssembler
 import org.apache.flink.table.api.*
 import org.apache.flink.types.Row
-
 import org.apache.flinkx.api.conv.*
 import org.apache.flinkx.api.serializers.*
 
@@ -83,7 +82,7 @@ import scala.jdk.CollectionConverters.*
         row(10).toDouble
       )
     )
-    .setParallelism(3) // it is tunned based on the current CSV data volume
+    .setParallelism(3) // it is tuned based on the current CSV data volume
 
   val trainData = tEnv.fromDataStream(csvStream)
 
@@ -145,27 +144,26 @@ import scala.jdk.CollectionConverters.*
     .setTol(0.01d)
     .setGlobalBatchSize(64)
 
-  val stages = (List[Stage[?]](
+  val stages = List[Stage[?]](
     indexer,
     geographyEncoder,
     assembler,
     standardScaler,
     finalAssembler,
     lr
-  )).asJava
+  ).asJava
 
   val pipeline = Pipeline(stages)
 
-  val testSetSize = 2000
+  val validateSetSize = 2000
   val totalSetSize = 10000
-  val trainSetSize = totalSetSize - testSetSize
+  val trainSetSize = totalSetSize - validateSetSize
   val trainSet = trainData.limit(trainSetSize)
-  val testSet = trainData.limit(trainSetSize, testSetSize)
-
+  val validateSet = trainData.limit(trainSetSize, validateSetSize)
   val pipelineModel = pipeline.fit(trainSet)
 
   // Test
-  val testResult = pipelineModel.transform(testSet)(0)
+  val validateResult = pipelineModel.transform(validateSet)(0)
 
   val resQuery =
     s"""|select 
@@ -173,14 +171,13 @@ import scala.jdk.CollectionConverters.*
         |$exitedLabel as $labelCol, 
         |$predictionCol, 
         |rawPrediction        
-        |from $testResult""".stripMargin
-  val res = tEnv.sqlQuery(resQuery).execute
-  val iter = res.collect
+        |from $validateResult""".stripMargin
 
+  val iter = tEnv.sqlQuery(resQuery).execute.collect
   val firstRow = iter.next
   val colNames = firstRow.getFieldNames(true).asScala.toList.mkString(", ")
 
-  val correctCnt = (List(firstRow).toIterable ++ iter.asScala).foldLeft(0) { (acc, row) =>
+  val correctCnt = (Iterator(firstRow) ++ iter.asScala).foldLeft(0) { (acc, row) =>
     println(row)
     val label = row.getFieldAs[Double](labelCol)
     val prediction = row.getFieldAs[Double](predictionCol)
@@ -188,7 +185,7 @@ import scala.jdk.CollectionConverters.*
   }
   println(colNames)
   println(
-    s"correct labels count: $correctCnt, accuracy: ${correctCnt / testSetSize.toDouble}"
+    s"correct labels count: $correctCnt, accuracy: ${correctCnt / validateSetSize.toDouble}"
   )
 
   val evaluator = BinaryClassificationEvaluator()
@@ -201,7 +198,7 @@ import scala.jdk.CollectionConverters.*
     )
 
   // Uses the BinaryClassificationEvaluator object for evaluations.
-  val outputTable = evaluator.transform(testResult)(0)
+  val outputTable = evaluator.transform(validateResult)(0)
   val evaluationResult = outputTable.execute.collect.next
   println(
     s"Area under the precision-recall curve: ${evaluationResult.getField(ClassifierMetric.AREA_UNDER_PR)}"
