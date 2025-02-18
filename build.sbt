@@ -1,7 +1,7 @@
 Global / onChangedBuildSource := ReloadOnSourceChanges
 
 ThisBuild / organization := "com.example"
-ThisBuild / scalaVersion := "3.3.4"
+ThisBuild / scalaVersion := "3.3.5"
 
 val flinkVersion = "1.18.1"
 val flinkMlVersion = "2.3.0"
@@ -25,6 +25,10 @@ lazy val root = (project in file("."))
       "org.apache.flink" % "flink-clients" % flinkVersion % Provided,
       "org.apache.flink" % "flink-table-runtime" % flinkVersion % Provided,
       "org.apache.flink" % "flink-table-planner-loader" % flinkVersion % Provided,
+      "org.apache.flink" % "flink-shaded-hadoop-2-uber" % "2.8.3-10.0" % Provided,
+      "org.apache.paimon" % "paimon-flink-1.18" % "1.0.1" % Provided,
+      "org.apache.paimon" % "paimon-s3" % "1.0.1" % Provided,
+      "org.slf4j" % "slf4j-log4j12" % "1.7.15" % Provided,
       "ch.qos.logback" % "logback-classic" % "1.4.14" % Provided
     ),
     buildInfoPackage := "com.example",

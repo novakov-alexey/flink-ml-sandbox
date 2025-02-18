@@ -1,6 +1,5 @@
 package com.example
 
-import Common.*
 import org.apache.flink.api.common.eventtime.WatermarkStrategy
 import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.api.java.typeutils.RowTypeInfo
@@ -8,7 +7,7 @@ import org.apache.flink.connector.file.src.FileSource
 import org.apache.flink.connector.file.src.reader.TextLineInputFormat
 import org.apache.flink.core.fs.Path
 import org.apache.flink.ml.api.Stage
-import org.apache.flink.ml.builder.{Pipeline, PipelineModel}
+import org.apache.flink.ml.builder.Pipeline
 import org.apache.flink.ml.classification.logisticregression.LogisticRegression
 import org.apache.flink.ml.evaluation.binaryclassification.{
   BinaryClassificationEvaluator,
@@ -19,23 +18,40 @@ import org.apache.flink.ml.feature.standardscaler.StandardScaler
 import org.apache.flink.ml.feature.stringindexer.{StringIndexer, StringIndexerParams}
 import org.apache.flink.ml.feature.vectorassembler.VectorAssembler
 import org.apache.flink.table.api.*
+import org.apache.flink.table.api.Expressions.*
 import org.apache.flink.types.Row
 import org.apache.flinkx.api.conv.*
+import org.apache.flinkx.api.*
 import org.apache.flinkx.api.serializers.*
+import org.slf4j.LoggerFactory
 
 import java.io.File
 import scala.jdk.CollectionConverters.*
 
-@main def customerChurn =
-  // val hostname = args.headOption
-  val hostname = Some("localhost") // Some("sessioncluster-b98f04a6-a053-4570-8fdd-6fb426f640f9-jobmanager")
+import Common.*
+import Common.given
+import ExecutionMode.*
+import java.util.Date
 
-  val (env, tEnv) = getEnv(hostname)
+case class ModelMetrics(correctPredictions: Int, accuracy: Float)
+
+def getExecutionMode(args: String*) =
+  if args.nonEmpty then
+    if args(0) == "local" then LocalCluster
+    else if args(0) == "app" then AppCluster
+    else SessionCluster("localhost") // SessionCluster("sessioncluster-b98f04a6-a053-4570-8fdd-6fb426f640f9-jobmanager")
+  else LocalCluster
+
+@main def customerChurn(args: String*) =
+  val logger = LoggerFactory.getLogger(this.getClass())
+  val executionMode = getExecutionMode(args*)
+
+  val (env, tEnv) = getEnv(executionMode)
   val exitedLabel = "Exited"
 
   val filePath =
-    if hostname.isDefined && !hostname.contains("localhost") then
-      Path("s3://vvp/artifacts/namespaces/default/Churn_Modelling.csv")
+    if args.length > 1 then Path(args(1))
+    else if executionMode == AppCluster then Path("s3://vvp/artifacts/namespaces/default/Churn_Modelling.csv")
     else Path.fromLocalFile(File(s"${File(".").getCanonicalPath}/data/Churn_Modelling.csv"))
 
   val source = FileSource
@@ -44,6 +60,7 @@ import scala.jdk.CollectionConverters.*
       filePath
     )
     .build()
+
   val rawFeatureCols = Array(
     "CreditScore",
     "GeographyStr",
@@ -122,8 +139,7 @@ import scala.jdk.CollectionConverters.*
       .setOutputCol("continues_features_s")
 
   // 5 - merge columns to features column
-  val categoricalCols =
-    List("Geography", "Gender", "HasCrCard", "IsActiveMember")
+  val categoricalCols = List("Geography", "Gender", "HasCrCard", "IsActiveMember")
   val finalCols = categoricalCols :+ "continues_features_s"
   // Geography is 3 countries, Gender is 2 + other features
   val encodedFeatures = List(3, 2)
@@ -165,28 +181,8 @@ import scala.jdk.CollectionConverters.*
   // Test
   val validateResult = pipelineModel.transform(validateSet)(0)
 
-  val resQuery =
-    s"""|select 
-        |$featuresCol, 
-        |$exitedLabel as $labelCol, 
-        |$predictionCol, 
-        |rawPrediction        
-        |from $validateResult""".stripMargin
-
-  val iter = tEnv.sqlQuery(resQuery).execute.collect
-  val firstRow = iter.next
-  val colNames = firstRow.getFieldNames(true).asScala.toList.mkString(", ")
-
-  val correctCnt = (Iterator(firstRow) ++ iter.asScala).foldLeft(0) { (acc, row) =>
-    println(row)
-    val label = row.getFieldAs[Double](labelCol)
-    val prediction = row.getFieldAs[Double](predictionCol)
-    if label == prediction then acc + 1 else acc
-  }
-  println(colNames)
-  println(
-    s"correct labels count: $correctCnt, accuracy: ${correctCnt / validateSetSize.toDouble}"
-  )
+  val accuracyCol = "accuracy"
+  val correctLabelsCol = "correctLabelsCount"
 
   val evaluator = BinaryClassificationEvaluator()
     .setLabelCol(exitedLabel)
@@ -197,19 +193,81 @@ import scala.jdk.CollectionConverters.*
       ClassifierMetric.AREA_UNDER_LORENZ
     )
 
+  lazy val currentDirectory = File(".").getCanonicalPath
+  val catalogPath = if args.length > 2 then args(2) else s"file://$currentDirectory/target/catalog"
+  val catalogName = if args.length > 3 then args(3) else "my_catalog"
+
+  tEnv.executeSql(s"""
+       |CREATE CATALOG $catalogName WITH (
+       |    'type'='paimon',
+       |    'warehouse'='$catalogPath'
+       |);""".stripMargin)
+
+  val schema = Schema.newBuilder
+    .column("executionTime", DataTypes.STRING().notNull())
+    .column(correctLabelsCol, DataTypes.BIGINT())
+    .column(accuracyCol, DataTypes.DOUBLE())
+    .column("lastUpdate", DataTypes.TIMESTAMP(2))
+    .primaryKey("executionTime")
+    .build
+
+  val tabelExists = tEnv.listTables(catalogName, "default").exists(_ == "metricsSink")
+  val sinkTableName = s"$catalogName.`default`.metricsSink"
+  if !tabelExists then
+    tEnv.createTable(
+      sinkTableName,
+      TableDescriptor
+        .forConnector("paimon")
+        .schema(schema)
+        .option("changelog-producer", "input")
+        .build
+    )
+
+  val timeKey = Date().toString
+  val stmtSet = tEnv.createStatementSet()
+  val metricsQuery =
+    s"""|insert into $sinkTableName
+        |select
+        |'$timeKey' as executionTime,         
+        |count(*) as $correctLabelsCol,
+        |count(*) / ${validateSetSize.toDouble} as $accuracyCol,
+        |NOW() as lastUpdate
+        |from $validateResult 
+        |where $exitedLabel = $predictionCol
+        |""".stripMargin
+  stmtSet.addInsertSql(metricsQuery)
+
   // Uses the BinaryClassificationEvaluator object for evaluations.
   val outputTable = evaluator.transform(validateResult)(0)
-  val evaluationResult = outputTable.execute.collect.next
-  println(
-    s"Area under the precision-recall curve: ${evaluationResult.getField(ClassifierMetric.AREA_UNDER_PR)}"
-  )
-  println(
-    s"Area under the receiver operating characteristic curve: ${evaluationResult
-        .getField(ClassifierMetric.AREA_UNDER_ROC)}"
-  )
-  println(
-    s"Kolmogorov-Smirnov value: ${evaluationResult.getField(ClassifierMetric.KS)}"
-  )
-  println(
-    s"Area under Lorenz curve: ${evaluationResult.getField(ClassifierMetric.AREA_UNDER_LORENZ)}"
-  )
+
+  val evaluatorSchema = Schema.newBuilder
+    .column(ClassifierMetric.AREA_UNDER_PR, DataTypes.DOUBLE())
+    .column(ClassifierMetric.AREA_UNDER_ROC, DataTypes.DOUBLE())
+    .column(ClassifierMetric.KS, DataTypes.DOUBLE())
+    .column(ClassifierMetric.AREA_UNDER_LORENZ, DataTypes.DOUBLE())
+    .column("executionTime", DataTypes.TIMESTAMP(2))
+    .build
+
+  val evaluatorTableName = s"$catalogName.`default`.evaluatorMetricsSink"
+  if !tEnv.listTables(catalogName, "default").exists(_ == "evaluatorMetricsSink") then
+    tEnv.createTable(
+      evaluatorTableName,
+      TableDescriptor
+        .forConnector("paimon")
+        .schema(evaluatorSchema)
+        .build
+    )
+
+  val evaluatorMetricsQuery =
+    s"""|insert into $evaluatorTableName
+        |select 
+        |${ClassifierMetric.AREA_UNDER_PR},
+        |${ClassifierMetric.AREA_UNDER_ROC},
+        |${ClassifierMetric.KS},
+        |${ClassifierMetric.AREA_UNDER_LORENZ},
+        |NOW() as executionTime
+        |from $outputTable
+        |""".stripMargin
+  stmtSet.addInsertSql(evaluatorMetricsQuery)
+
+  stmtSet.execute()

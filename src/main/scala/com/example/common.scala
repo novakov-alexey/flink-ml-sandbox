@@ -19,6 +19,14 @@ import org.apache.flink.client.deployment.executors.RemoteExecutor
 import org.apache.flinkx.api.StreamExecutionEnvironment
 import org.apache.flinkx.api.conv.*
 import org.apache.flink.table.api.*
+import ExecutionMode.*
+import org.apache.flink.api.common.RuntimeExecutionMode
+
+sealed trait ExecutionMode
+object ExecutionMode:
+  case object LocalCluster extends ExecutionMode
+  case class SessionCluster(jobManagerHostname: String) extends ExecutionMode
+  case object AppCluster extends ExecutionMode
 
 object Common:
   val labelCol = "label"
@@ -31,12 +39,12 @@ object Common:
   given rowTypeInfo: TypeInformation[Row] = RowTypeInfo()
 
   def getEnv(
-      hostname: Option[String] = None
+      mode: ExecutionMode = LocalCluster
   ): (StreamExecutionEnvironment, StreamTableEnvironment) =
     val cfg = Configuration()
 
-    val env = hostname match
-      case Some(host) =>
+    val env = mode match
+      case SessionCluster(host) =>
         cfg.setString("taskmanager.memory.network.max", "1g")
 
         val restPort = 8081
@@ -66,9 +74,11 @@ object Common:
         e.setParallelism(2)
         e
 
-      case None =>
+      case AppCluster =>
+        StreamExecutionEnvironment.getExecutionEnvironment(cfg)
+      case LocalCluster =>
         StreamExecutionEnvironment.createLocalEnvironment(4, cfg)
-
+    
     val tEnv = StreamTableEnvironment.create(env)
     tEnv.createTemporarySystemFunction("doubleToVector", DoubleToVector())
     (env, tEnv)
