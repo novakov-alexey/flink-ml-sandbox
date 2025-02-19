@@ -197,11 +197,12 @@ def getExecutionMode(args: String*) =
   val catalogPath = if args.length > 2 then args(2) else s"file://$currentDirectory/target/catalog"
   val catalogName = if args.length > 3 then args(3) else "my_catalog"
 
-  tEnv.executeSql(s"""
-       |CREATE CATALOG $catalogName WITH (
-       |    'type'='paimon',
-       |    'warehouse'='$catalogPath'
-       |);""".stripMargin)
+  if !tEnv.listCatalogs().exists(_ == catalogName) then
+    tEnv.executeSql(s"""
+        |CREATE CATALOG `$catalogName` WITH (
+        |    'type'='paimon',
+        |    'warehouse'='$catalogPath'
+        |);""".stripMargin)
 
   val schema = Schema.newBuilder
     .column("executionTime", DataTypes.STRING().notNull())
@@ -212,7 +213,7 @@ def getExecutionMode(args: String*) =
     .build
 
   val tabelExists = tEnv.listTables(catalogName, "default").exists(_ == "metricsSink")
-  val sinkTableName = s"$catalogName.`default`.metricsSink"
+  val sinkTableName = s"`$catalogName`.`default`.metricsSink"
   if !tabelExists then
     tEnv.createTable(
       sinkTableName,
@@ -248,7 +249,7 @@ def getExecutionMode(args: String*) =
     .column("executionTime", DataTypes.TIMESTAMP(2))
     .build
 
-  val evaluatorTableName = s"$catalogName.`default`.evaluatorMetricsSink"
+  val evaluatorTableName = s"`$catalogName`.`default`.evaluatorMetricsSink"
   if !tEnv.listTables(catalogName, "default").exists(_ == "evaluatorMetricsSink") then
     tEnv.createTable(
       evaluatorTableName,
