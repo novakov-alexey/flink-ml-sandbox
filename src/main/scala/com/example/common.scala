@@ -20,7 +20,6 @@ import org.apache.flinkx.api.StreamExecutionEnvironment
 import org.apache.flinkx.api.conv.*
 import org.apache.flink.table.api.*
 import ExecutionMode.*
-import org.apache.flink.api.common.RuntimeExecutionMode
 
 sealed trait ExecutionMode
 object ExecutionMode:

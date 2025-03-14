@@ -18,7 +18,6 @@ import org.apache.flink.ml.feature.standardscaler.StandardScaler
 import org.apache.flink.ml.feature.stringindexer.{StringIndexer, StringIndexerParams}
 import org.apache.flink.ml.feature.vectorassembler.VectorAssembler
 import org.apache.flink.table.api.*
-import org.apache.flink.table.api.Expressions.*
 import org.apache.flink.types.Row
 import org.apache.flinkx.api.conv.*
 import org.apache.flinkx.api.*
@@ -29,11 +28,8 @@ import java.io.File
 import scala.jdk.CollectionConverters.*
 
 import Common.*
-import Common.given
 import ExecutionMode.*
 import java.util.Date
-
-case class ModelMetrics(correctPredictions: Int, accuracy: Float)
 
 def getExecutionMode(args: String*) =
   if args.nonEmpty then
@@ -197,8 +193,7 @@ def getExecutionMode(args: String*) =
   val catalogPath = if args.length > 2 then args(2) else s"file://$currentDirectory/target/catalog"
   val catalogName = if args.length > 3 then args(3) else "my_catalog"
 
-  if !tEnv.listCatalogs().exists(_ == catalogName) then
-    tEnv.executeSql(s"""
+  if !tEnv.listCatalogs().contains(catalogName) then tEnv.executeSql(s"""
         |CREATE CATALOG `$catalogName` WITH (
         |    'type'='paimon',
         |    'warehouse'='$catalogPath'
@@ -212,9 +207,9 @@ def getExecutionMode(args: String*) =
     .primaryKey("executionTime")
     .build
 
-  val tabelExists = tEnv.listTables(catalogName, "default").exists(_ == "metricsSink")
+  val tableExists = tEnv.listTables(catalogName, "default").contains("metricsSink")
   val sinkTableName = s"`$catalogName`.`default`.metricsSink"
-  if !tabelExists then
+  if !tableExists then
     tEnv.createTable(
       sinkTableName,
       TableDescriptor
@@ -250,7 +245,7 @@ def getExecutionMode(args: String*) =
     .build
 
   val evaluatorTableName = s"`$catalogName`.`default`.evaluatorMetricsSink"
-  if !tEnv.listTables(catalogName, "default").exists(_ == "evaluatorMetricsSink") then
+  if !tEnv.listTables(catalogName, "default").contains("evaluatorMetricsSink") then
     tEnv.createTable(
       evaluatorTableName,
       TableDescriptor
